@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Code Studio",
+  "description": "A modern, dark-themed AI Agent IDE for generating and previewing web applications instantly using Gemini 3.",
+  "requestFramePermissions": []
+}
