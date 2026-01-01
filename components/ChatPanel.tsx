@@ -1,7 +1,125 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Sparkles, Files, Sun, Terminal, SlidersHorizontal } from 'lucide-react';
+import { Send, Bot, User, Sparkles, Files, Sun, Terminal as TerminalIcon, SlidersHorizontal, Copy, Check, ChevronDown, Users, Plus, MessageSquare, Trash2, History } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { Message, Sender, ToolId } from '../types';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
+import { Message, Sender, ToolId, ChatSession } from '../types';
+
+// Built-in Claude Code agents
+const BUILT_IN_AGENTS = [
+  { name: 'Default', description: 'Standard Claude Code assistant', isBuiltIn: true },
+  { name: 'Explore', description: 'Fast codebase exploration', isBuiltIn: true },
+  { name: 'Plan', description: 'Software architecture planning', isBuiltIn: true },
+];
+
+// Terminal output component using xterm
+const TerminalMessage: React.FC<{ content: string }> = ({ content }) => {
+  const terminalRef = useRef<HTMLDivElement>(null);
+  const xtermRef = useRef<Terminal | null>(null);
+
+  useEffect(() => {
+    if (!terminalRef.current || xtermRef.current) return;
+
+    const term = new Terminal({
+      theme: {
+        background: '#0d0d0d',
+        foreground: '#e0e0e0',
+        cursor: 'transparent',
+        cursorAccent: 'transparent',
+        selectionBackground: '#3b82f6',
+      },
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: 12,
+      lineHeight: 1.2,
+      cursorBlink: false,
+      disableStdin: true,
+      convertEol: true,
+      scrollback: 0,
+    });
+
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(terminalRef.current);
+
+    // Write content with ANSI codes
+    term.write(content);
+
+    // Calculate rows needed
+    const lines = content.split('\n').length;
+    term.resize(80, Math.max(lines + 1, 3));
+
+    xtermRef.current = term;
+
+    return () => {
+      term.dispose();
+      xtermRef.current = null;
+    };
+  }, [content]);
+
+  return (
+    <div
+      ref={terminalRef}
+      className="rounded-lg overflow-hidden border border-white/10 bg-[#0d0d0d]"
+      style={{ minHeight: '60px', maxHeight: '300px' }}
+    />
+  );
+};
+
+// Code block with copy button
+const CodeBlock: React.FC<{ language?: string; children: string }> = ({ language, children }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(children);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const isCommand = language === 'bash' || language === 'sh' || language === 'shell' || language === 'zsh';
+  const isHtml = language === 'html';
+
+  // For HTML code blocks, show a compact message
+  if (isHtml && children.length > 200) {
+    return (
+      <div className="my-2 p-2 bg-black/30 rounded border border-white/10 text-xs font-mono text-emerald-400 flex items-center gap-2">
+        <Files size={14} />
+        <span>Code generated. Check preview.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="my-2 relative group">
+      <div className="flex items-center justify-between bg-gray-800 px-3 py-1.5 rounded-t border border-white/10 border-b-0">
+        <span className="text-[10px] text-gray-400 uppercase font-medium">
+          {isCommand ? 'Command' : language || 'code'}
+        </span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1.5 text-[10px] text-gray-400 hover:text-white transition-colors px-2 py-0.5 rounded hover:bg-white/10"
+        >
+          {copied ? (
+            <>
+              <Check size={12} className="text-green-400" />
+              <span className="text-green-400">Copied!</span>
+            </>
+          ) : (
+            <>
+              <Copy size={12} />
+              <span>Copy</span>
+            </>
+          )}
+        </button>
+      </div>
+      <pre className={`p-3 bg-black/40 rounded-b border border-white/10 border-t-0 overflow-x-auto ${
+        isCommand ? 'text-yellow-300' : 'text-gray-300'
+      }`}>
+        <code className="text-xs font-mono">{children}</code>
+      </pre>
+    </div>
+  );
+};
 
 // Custom Kiro Icon Component
 const KiroIcon = ({ size = 24, className }: { size?: number | string, className?: string }) => (
@@ -25,16 +143,35 @@ interface ChatPanelProps {
   isGenerating: boolean;
   activeTool: ToolId;
   onOpenConfig: () => void;
+  currentAgent: string;
+  onAgentChange: (agent: string) => void;
+  // Chat history props
+  chatSessions: ChatSession[];
+  activeSessionId: string | null;
+  onNewChat: () => void;
+  onSwitchSession: (sessionId: string) => void;
+  onDeleteSession: (sessionId: string) => void;
 }
 
-const ChatPanel: React.FC<ChatPanelProps> = ({ 
-  messages, 
-  onSendMessage, 
+const ChatPanel: React.FC<ChatPanelProps> = ({
+  messages,
+  onSendMessage,
   isGenerating,
   activeTool,
-  onOpenConfig
+  onOpenConfig,
+  currentAgent,
+  onAgentChange,
+  chatSessions,
+  activeSessionId,
+  onNewChat,
+  onSwitchSession,
+  onDeleteSession
 }) => {
   const [inputValue, setInputValue] = useState('');
+  const [showAgentDropdown, setShowAgentDropdown] = useState(false);
+  const [showHistoryDropdown, setShowHistoryDropdown] = useState(false);
+  const agentDropdownRef = useRef<HTMLDivElement>(null);
+  const historyDropdownRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -45,10 +182,25 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     scrollToBottom();
   }, [messages]);
 
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (agentDropdownRef.current && !agentDropdownRef.current.contains(event.target as Node)) {
+        setShowAgentDropdown(false);
+      }
+      if (historyDropdownRef.current && !historyDropdownRef.current.contains(event.target as Node)) {
+        setShowHistoryDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (inputValue.trim() && !isGenerating) {
-      onSendMessage(inputValue);
+    const trimmedInput = inputValue.trim();
+    if (trimmedInput && !isGenerating) {
+      onSendMessage(trimmedInput);
       setInputValue('');
     }
   };
@@ -64,7 +216,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
      switch(id) {
         case 'claude': return { name: 'Claude Code', icon: Sun, color: 'text-orange-500' };
         case 'gemini': return { name: 'Gemini CLI', icon: Sparkles, color: 'text-blue-400' };
-        case 'codex': return { name: 'Codex CLI', icon: Terminal, color: 'text-purple-400' };
+        case 'codex': return { name: 'Codex CLI', icon: TerminalIcon, color: 'text-purple-400' };
         case 'kiro': return { name: 'Kiro CLI', icon: KiroIcon, color: 'text-emerald-400' };
         default: return { name: 'Agent', icon: Bot, color: 'text-gray-400' };
      }
@@ -76,24 +228,121 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   return (
     <div className="flex flex-col h-full bg-ide-panel min-w-[350px] w-[450px] border-r border-ide-border">
       {/* Header */}
-      <div className="h-14 border-b border-ide-border flex items-center px-6 justify-between bg-ide-bg">
-        <div className="flex items-center gap-3">
-            <span className="font-semibold text-lg text-ide-textLight flex items-center gap-2">
-              <ToolIcon size={20} className={toolInfo.color} />
+      <div className="h-14 border-b border-ide-border flex items-center px-4 justify-between bg-ide-bg">
+        <div className="flex items-center gap-2">
+            <span className="font-semibold text-base text-ide-textLight flex items-center gap-2">
+              <ToolIcon size={18} className={toolInfo.color} />
               {toolInfo.name}
             </span>
-            <button 
+            <button
               onClick={onOpenConfig}
-              className="p-1.5 rounded-lg bg-ide-panel hover:bg-white/10 text-gray-400 hover:text-white transition-colors border border-ide-border group"
+              className="p-1.5 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
               title="Configure"
             >
-               <SlidersHorizontal size={14} className="group-hover:text-ide-textLight" />
+               <SlidersHorizontal size={14} />
             </button>
         </div>
 
-        <div className="flex bg-ide-panel rounded-full p-1 border border-ide-border">
-            <button className="px-3 py-0.5 text-xs rounded-full bg-ide-border text-white font-medium shadow-sm">Agent</button>
-            <button className="px-3 py-0.5 text-xs rounded-full text-gray-500 hover:text-gray-300">Coach</button>
+        <div className="flex items-center gap-2">
+          {/* New Chat Button */}
+          <button
+            onClick={onNewChat}
+            className="p-1.5 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+            title="New Chat"
+          >
+            <Plus size={16} />
+          </button>
+
+          {/* Chat History Dropdown */}
+          <div className="relative" ref={historyDropdownRef}>
+            <button
+              onClick={() => setShowHistoryDropdown(!showHistoryDropdown)}
+              className="p-1.5 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+              title="Chat History"
+            >
+              <History size={16} />
+            </button>
+
+            {showHistoryDropdown && (
+              <div className="absolute right-0 top-full mt-1 w-64 bg-ide-panel border border-ide-border rounded-lg shadow-xl z-50 overflow-hidden max-h-80 overflow-y-auto">
+                <div className="p-2 border-b border-ide-border flex items-center justify-between">
+                  <span className="text-[10px] text-gray-500 uppercase tracking-wider">Chat History</span>
+                  <span className="text-[10px] text-gray-600">{chatSessions.length} chats</span>
+                </div>
+                {chatSessions.map((session) => (
+                  <div
+                    key={session.id}
+                    className={`group flex items-center justify-between px-3 py-2 hover:bg-white/5 transition-colors cursor-pointer ${
+                      session.id === activeSessionId ? 'bg-blue-600/20 border-l-2 border-blue-500' : ''
+                    }`}
+                    onClick={() => {
+                      onSwitchSession(session.id);
+                      setShowHistoryDropdown(false);
+                    }}
+                  >
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <MessageSquare size={14} className="text-gray-500 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm text-gray-200 block truncate">{session.title}</span>
+                        <span className="text-[10px] text-gray-500">
+                          {new Date(session.updatedAt).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteSession(session.id);
+                      }}
+                      className="p-1 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+                      title="Delete chat"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Agent Selector Dropdown - Only show for Claude */}
+          {activeTool === 'claude' && (
+            <div className="relative" ref={agentDropdownRef}>
+              <button
+                onClick={() => setShowAgentDropdown(!showAgentDropdown)}
+                className="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg bg-ide-panel border border-ide-border hover:bg-white/5 transition-colors"
+              >
+                <Users size={12} className="text-gray-400" />
+                <span className="text-gray-300">{currentAgent || 'Default'}</span>
+                <ChevronDown size={10} className={`text-gray-400 transition-transform ${showAgentDropdown ? 'rotate-180' : ''}`} />
+              </button>
+
+              {showAgentDropdown && (
+                <div className="absolute right-0 top-full mt-1 w-56 bg-ide-panel border border-ide-border rounded-lg shadow-xl z-50 overflow-hidden">
+                  <div className="p-2 border-b border-ide-border">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-wider">Built-in Agents</span>
+                  </div>
+                  {BUILT_IN_AGENTS.map((agent) => (
+                    <button
+                      key={agent.name}
+                      onClick={() => {
+                        onAgentChange(agent.name === 'Default' ? '' : agent.name);
+                        setShowAgentDropdown(false);
+                      }}
+                      className={`w-full px-3 py-2 text-left hover:bg-white/5 transition-colors flex flex-col ${
+                        (currentAgent === agent.name) || (agent.name === 'Default' && !currentAgent)
+                          ? 'bg-blue-600/20 border-l-2 border-blue-500'
+                          : ''
+                      }`}
+                    >
+                      <span className="text-sm text-gray-200">{agent.name}</span>
+                      <span className="text-[10px] text-gray-500">{agent.description}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -117,33 +366,42 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
             
             <div className={`max-w-[85%] rounded-2xl p-3 text-sm leading-relaxed ${
-              msg.sender === Sender.USER 
-                ? 'bg-blue-600/10 text-blue-100 rounded-tr-none' 
+              msg.sender === Sender.USER
+                ? 'bg-blue-600/10 text-blue-100 rounded-tr-none'
                 : 'bg-ide-border/50 text-gray-300 rounded-tl-none'
             }`}>
               {msg.sender === Sender.AGENT ? (
-                 <div className="prose prose-invert prose-sm max-w-none">
-                   <ReactMarkdown 
-                    components={{
-                      code({node, className, children, ...props}) {
-                         // Hide large blocks of code in chat to keep it clean, user sees it in right panel
-                         const match = /language-(\w+)/.exec(className || '')
-                         const isBlock = match && String(children).includes('\n');
-                         if (isBlock) {
-                           return (
-                             <div className="my-2 p-2 bg-black/30 rounded border border-white/10 text-xs font-mono text-emerald-400 flex items-center gap-2">
-                               <Files size={14} />
-                               <span>Code generated. Check preview.</span>
-                             </div>
-                           )
-                         }
-                         return <code className={className} {...props}>{children}</code>
-                      }
-                    }}
-                   >
-                     {msg.text}
-                   </ReactMarkdown>
-                 </div>
+                msg.isTerminalOutput ? (
+                  // 终端输出使用 xterm 渲染
+                  <TerminalMessage content={msg.text} />
+                ) : (
+                  <div className="prose prose-invert prose-sm max-w-none">
+                    <ReactMarkdown
+                      components={{
+                        code({node, className, children, ...props}) {
+                          const match = /language-(\w+)/.exec(className || '');
+                          const language = match ? match[1] : undefined;
+                          const codeString = String(children).replace(/\n$/, '');
+                          const isBlock = codeString.includes('\n') || language;
+
+                          // Use CodeBlock for code blocks (multi-line or with language)
+                          if (isBlock) {
+                            return <CodeBlock language={language}>{codeString}</CodeBlock>;
+                          }
+
+                          // Inline code
+                          return (
+                            <code className="px-1.5 py-0.5 bg-black/30 rounded text-xs font-mono text-pink-400" {...props}>
+                              {children}
+                            </code>
+                          );
+                        }
+                      }}
+                    >
+                      {msg.text}
+                    </ReactMarkdown>
+                  </div>
+                )
               ) : (
                 msg.text
               )}

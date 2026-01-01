@@ -1,9 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 
 // Initialize the Gemini client
-// The API key must be obtained exclusively from the environment variable process.env.API_KEY.
-// We assume this variable is pre-configured, valid, and accessible.
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// The API key is obtained from Vite environment variable VITE_GEMINI_API_KEY
+const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
 
 const SYSTEM_INSTRUCTION = `
 You are an expert Frontend React and Web Developer Agent.

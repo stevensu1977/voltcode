@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Open Code Studio",
+  "version": "0.0.0",
+  "identifier": "com.opencode.studio",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:3000"
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "Open Code Studio",
+    "copyright": "Copyright © 2025",
+    "category": "DeveloperTool",
+    "shortDescription": "AI-powered IDE for web development",
+    "longDescription": "Open Code Studio is an AI-powered IDE for generating and previewing web applications with chat-based code generation."
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Open Code Studio",
+        "width": 1400,
+        "height": 900,
+        "resizable": true,
+        "fullscreen": false,
+        "label": "main",
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self' customprotocol: asset:",
+        "connect-src": "'self' https://generativelanguage.googleapis.com wss: ws: http: https:",
+        "script-src": "'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com",
+        "style-src": "'self' 'unsafe-inline' https://cdn.tailwindcss.com",
+        "img-src": "'self' asset: tauri: https: data: blob:",
+        "font-src": "'self' https: data:"
+      }
+    }
+  },
+  "plugins": {}
+}

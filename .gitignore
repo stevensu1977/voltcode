@@ -22,3 +22,22 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Tauri
+src-tauri/target/
+
+# Rust
+*.rs.bk
+*.pdb
+
+# Environment and secrets
+.env
+.env.*
+!.env.local.example
+
+# Resources (bundled binaries)
+Resources/
+
+# Temporary files
+*.tmp
+*.temp
