@@ -19,10 +19,22 @@ A modern desktop application built with Tauri + React + TypeScript, featuring ch
 - 🔧 **Integrated Terminal** - Full PTY terminal with xterm.js
 - 🎨 **Dark Theme IDE** - Modern dark-themed interface
 - 📱 **Responsive Preview** - Toggle between mobile and desktop viewports
+- 🔌 **MCP Server Support** - Configure Model Context Protocol servers (stdio & HTTP)
+- 📦 **Git Integration** - Built-in Git support for version control
 
-## 📸 Screenshot
+## 📸 Screenshots
 
+### Main Interface
 ![Open Code Studio with Claude Code](Screenshots/opencode-claudecode.jpeg)
+
+### MCP Server Configuration
+![MCP Server Configuration](Screenshots/opencode-claudecode-mcp-server.jpeg)
+
+### MCP Server Test
+![MCP Server Test](Screenshots/opencode-claudecode-mcp-server-test.jpeg)
+
+### Git Integration
+![Git Integration](Screenshots/opencode-git.jpeg)
 
 ## 🏗️ Architecture
 
