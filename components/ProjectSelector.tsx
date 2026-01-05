@@ -43,7 +43,7 @@ const ProjectSelector: React.FC<ProjectSelectorProps> = ({ onProjectSelect }) =>
 
           {/* Title */}
           <h1 className="text-2xl font-bold text-ide-text text-center mb-2">
-            Open Code Studio
+            VoltCode
           </h1>
           <p className="text-ide-textLight text-center mb-8">
             AI-powered IDE for web development

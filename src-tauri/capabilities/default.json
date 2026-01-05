@@ -8,12 +8,13 @@
     "shell:default",
     "dialog:default",
     "dialog:allow-open",
+    "store:default",
     {
       "identifier": "shell:allow-execute",
       "allow": [
         {
           "name": "node",
-          "cmd": "/Users/wsuam/.opencode/node/darwin-arm64/bin/node",
+          "cmd": "/Users/wsuam/.voltcode/node/darwin-arm64/bin/node",
           "args": true,
           "sidecar": false
         }
@@ -24,7 +25,7 @@
       "allow": [
         {
           "name": "node",
-          "cmd": "/Users/wsuam/.opencode/node/darwin-arm64/bin/node",
+          "cmd": "/Users/wsuam/.voltcode/node/darwin-arm64/bin/node",
           "args": true,
           "sidecar": false
         }

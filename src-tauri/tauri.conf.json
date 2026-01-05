@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Open Code Studio",
+  "productName": "VoltCode",
   "version": "0.0.0",
-  "identifier": "com.opencode.studio",
+  "identifier": "com.voltcode.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000"
@@ -17,16 +17,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "publisher": "Open Code Studio",
+    "publisher": "VoltCode",
     "copyright": "Copyright © 2025",
     "category": "DeveloperTool",
     "shortDescription": "AI-powered IDE for web development",
-    "longDescription": "Open Code Studio is an AI-powered IDE for generating and previewing web applications with chat-based code generation."
+    "longDescription": "VoltCode is an AI-powered IDE for generating and previewing web applications with chat-based code generation."
   },
   "app": {
     "windows": [
       {
-        "title": "Open Code Studio",
+        "title": "VoltCode",
         "width": 1400,
         "height": 900,
         "resizable": true,

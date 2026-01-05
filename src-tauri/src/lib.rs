@@ -9,6 +9,9 @@ use std::collections::HashMap;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::Mutex; // 使用 tokio 的 async Mutex
 
+// API Proxy module - provides Anthropic API proxy functionality
+pub mod api_proxy;
+
 // 全局状态：PID 到终端 ID 的映射 (这个用 std::sync::Mutex 因为只在 kill_process 中使用)
 type TerminalMap = Arc<std::sync::Mutex<HashMap<u32, String>>>;
 
@@ -32,23 +35,23 @@ struct ExtractResult {
     message: String,
 }
 
-/// 获取 ~/.opencode 目录
-fn get_opencode_dir() -> Result<PathBuf, String> {
+/// 获取 ~/.voltcode 目录
+fn get_voltcode_dir() -> Result<PathBuf, String> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|e| format!("Failed to get home directory: {}", e))?;
 
-    Ok(PathBuf::from(home).join(".opencode"))
+    Ok(PathBuf::from(home).join(".voltcode"))
 }
 
-/// 解压指定的 CLI 工具（现在只是返回 ~/.opencode/cli 中的路径）
+/// 解压指定的 CLI 工具（现在只是返回 ~/.voltcode/cli 中的路径）
 #[tauri::command]
 fn extract_cli(_app_handle: tauri::AppHandle, cli_name: String) -> Result<ExtractResult, String> {
-    let opencode_dir = get_opencode_dir()?;
-    let cli_dir = opencode_dir.join("cli");
+    let voltcode_dir = get_voltcode_dir()?;
+    let cli_dir = voltcode_dir.join("cli");
 
     if !cli_dir.exists() {
-        return Err(format!("CLI directory not found: {:?}. Please ensure ~/.opencode/cli exists.", cli_dir));
+        return Err(format!("CLI directory not found: {:?}. Please ensure ~/.voltcode/cli exists.", cli_dir));
     }
 
     // 对于 claude-code，返回 cli 目录路径
@@ -73,10 +76,10 @@ fn extract_cli(_app_handle: tauri::AppHandle, cli_name: String) -> Result<Extrac
     })
 }
 
-/// 获取 Node.js 二进制路径（从 ~/.opencode/node）
+/// 获取 Node.js 二进制路径（从 ~/.voltcode/node）
 #[tauri::command]
 fn get_node_path(_app_handle: tauri::AppHandle) -> Result<String, String> {
-    let opencode_dir = get_opencode_dir()?;
+    let voltcode_dir = get_voltcode_dir()?;
 
     let platform = if cfg!(target_os = "macos") {
         if cfg!(target_arch = "aarch64") {
@@ -90,10 +93,10 @@ fn get_node_path(_app_handle: tauri::AppHandle) -> Result<String, String> {
         "linux-x64"
     };
 
-    let node_path = opencode_dir.join("node").join(platform).join("bin").join("node");
+    let node_path = voltcode_dir.join("node").join(platform).join("bin").join("node");
 
     if !node_path.exists() {
-        return Err(format!("Node binary not found: {:?}. Please ensure ~/.opencode/node/{}/bin/node exists.", node_path, platform));
+        return Err(format!("Node binary not found: {:?}. Please ensure ~/.voltcode/node/{}/bin/node exists.", node_path, platform));
     }
 
     Ok(node_path.to_string_lossy().to_string())
@@ -115,11 +118,11 @@ fn get_kiro_path() -> Result<String, String> {
     Ok(kiro_path.to_string_lossy().to_string())
 }
 
-/// 获取解压后的 CLI 路径（从 ~/.opencode/cli）
+/// 获取解压后的 CLI 路径（从 ~/.voltcode/cli）
 #[tauri::command]
 fn get_cli_path(_app_handle: tauri::AppHandle, cli_name: String) -> Result<String, String> {
-    let opencode_dir = get_opencode_dir()?;
-    let cli_dir = opencode_dir.join("cli");
+    let voltcode_dir = get_voltcode_dir()?;
+    let cli_dir = voltcode_dir.join("cli");
 
     if cli_name == "claude-code" {
         // Claude Code 直接在 cli 目录下
@@ -1417,6 +1420,217 @@ async fn execute_kiro_streaming(
     }
 }
 
+// ============================================================================
+// API Proxy Commands
+// ============================================================================
+
+/// API Proxy state - holds the client and server handle
+type ProxyServerHandle = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
+
+fn create_proxy_server_handle() -> ProxyServerHandle {
+    Arc::new(Mutex::new(None))
+}
+
+/// Start the API proxy server
+#[tauri::command]
+async fn start_api_proxy(
+    proxy_handle: tauri::State<'_, ProxyServerHandle>,
+    port: u16,
+    preferred_provider: Option<String>,
+    big_model: Option<String>,
+    small_model: Option<String>,
+) -> Result<String, String> {
+    // Check if server is already running
+    {
+        let handle = proxy_handle.lock().await;
+        if handle.is_some() {
+            return Err("API proxy server is already running".to_string());
+        }
+    }
+
+    // Build configuration
+    let config = api_proxy::ProxyConfig {
+        preferred_provider: preferred_provider
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(api_proxy::types::Provider::OpenAI),
+        big_model: big_model.unwrap_or_else(|| "gpt-4.1".to_string()),
+        small_model: small_model.unwrap_or_else(|| "gpt-4.1-mini".to_string()),
+        openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
+        gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
+        anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
+        openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
+    };
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+
+    // Spawn server in background
+    let handle = tokio::spawn(async move {
+        if let Err(e) = api_proxy::run_server(config, addr).await {
+            eprintln!("[API Proxy] Server error: {}", e);
+        }
+    });
+
+    // Store handle
+    {
+        let mut proxy = proxy_handle.lock().await;
+        *proxy = Some(handle);
+    }
+
+    Ok(format!("API proxy started on http://127.0.0.1:{}", port))
+}
+
+/// Stop the API proxy server
+#[tauri::command]
+async fn stop_api_proxy(
+    proxy_handle: tauri::State<'_, ProxyServerHandle>,
+) -> Result<String, String> {
+    let mut handle = proxy_handle.lock().await;
+
+    if let Some(h) = handle.take() {
+        h.abort();
+        Ok("API proxy server stopped".to_string())
+    } else {
+        Err("API proxy server is not running".to_string())
+    }
+}
+
+/// Send a message through the API proxy (direct call, no server needed)
+#[tauri::command]
+async fn api_proxy_send_message(
+    model: String,
+    messages: Vec<serde_json::Value>,
+    max_tokens: Option<u32>,
+    system: Option<String>,
+    temperature: Option<f32>,
+    preferred_provider: Option<String>,
+    big_model: Option<String>,
+    small_model: Option<String>,
+) -> Result<serde_json::Value, String> {
+    // Build configuration
+    let config = api_proxy::ProxyConfig {
+        preferred_provider: preferred_provider
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(api_proxy::types::Provider::OpenAI),
+        big_model: big_model.unwrap_or_else(|| "gpt-4.1".to_string()),
+        small_model: small_model.unwrap_or_else(|| "gpt-4.1-mini".to_string()),
+        openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
+        gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
+        anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
+        openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
+    };
+
+    let client = api_proxy::ApiClient::new(config);
+
+    // Convert messages from JSON to proper type
+    let parsed_messages: Vec<api_proxy::Message> = messages
+        .into_iter()
+        .map(|m| serde_json::from_value(m))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to parse messages: {}", e))?;
+
+    // Build request
+    let request = api_proxy::MessagesRequest {
+        model,
+        max_tokens: max_tokens.unwrap_or(4096),
+        messages: parsed_messages,
+        system: system.map(api_proxy::types::SystemContent::Text),
+        stop_sequences: None,
+        stream: false,
+        temperature,
+        top_p: None,
+        top_k: None,
+        metadata: None,
+        tools: None,
+        tool_choice: None,
+        thinking: None,
+    };
+
+    // Send request
+    let response = client
+        .send_message(&request)
+        .await
+        .map_err(|e| format!("API request failed: {}", e))?;
+
+    // Convert to JSON
+    serde_json::to_value(response).map_err(|e| format!("Failed to serialize response: {}", e))
+}
+
+/// Get the mapped model name for a given Claude model
+#[tauri::command]
+fn get_mapped_model(
+    model: String,
+    preferred_provider: Option<String>,
+    big_model: Option<String>,
+    small_model: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let config = api_proxy::ProxyConfig {
+        preferred_provider: preferred_provider
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(api_proxy::types::Provider::OpenAI),
+        big_model: big_model.unwrap_or_else(|| "gpt-4.1".to_string()),
+        small_model: small_model.unwrap_or_else(|| "gpt-4.1-mini".to_string()),
+        ..Default::default()
+    };
+
+    let mapped = api_proxy::map_model(&model, &config);
+
+    Ok(serde_json::json!({
+        "original": model,
+        "provider": mapped.provider,
+        "model": mapped.model,
+        "full_name": mapped.full_name
+    }))
+}
+
+// ============================================================================
+// Preview Window Command
+// ============================================================================
+
+/// Open external URL in a new Tauri window (bypasses iframe X-Frame-Options restrictions)
+#[tauri::command]
+async fn open_preview_window(
+    app: tauri::AppHandle,
+    url: String,
+    title: Option<String>,
+) -> Result<(), String> {
+    use tauri::WebviewWindowBuilder;
+    use tauri::WebviewUrl;
+
+    println!("[open_preview_window] Opening URL: {}", url);
+
+    // Parse URL
+    let parsed_url: url::Url = url.parse()
+        .map_err(|e| format!("Invalid URL: {}", e))?;
+
+    // Generate unique window label
+    let window_label = format!("preview-{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis());
+
+    // Window title
+    let window_title = title.unwrap_or_else(|| {
+        parsed_url.host_str()
+            .map(|h| format!("Preview - {}", h))
+            .unwrap_or_else(|| "Preview".to_string())
+    });
+
+    // Create new window
+    WebviewWindowBuilder::new(&app, &window_label, WebviewUrl::External(parsed_url))
+        .title(&window_title)
+        .inner_size(1200.0, 800.0)
+        .center()
+        .build()
+        .map_err(|e| format!("Failed to create preview window: {}", e))?;
+
+    println!("[open_preview_window] Window created: {}", window_label);
+    Ok(())
+}
+
+// ============================================================================
+// CLI Execution Commands
+// ============================================================================
+
 /// Execute Claude Code CLI with streaming output
 #[tauri::command]
 async fn execute_claude_streaming(
@@ -1512,8 +1726,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
         .manage(create_terminal_map())
         .manage(create_pty_writer_map())
+        .manage(create_proxy_server_handle())
         .invoke_handler(tauri::generate_handler![
             extract_cli,
             get_node_path,
@@ -1543,7 +1759,14 @@ pub fn run() {
             associate_terminal,
             create_interactive_terminal,
             close_terminal,
-            terminal_input
+            terminal_input,
+            // API Proxy commands
+            start_api_proxy,
+            stop_api_proxy,
+            api_proxy_send_message,
+            get_mapped_model,
+            // Preview window command
+            open_preview_window
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
