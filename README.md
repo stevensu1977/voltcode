@@ -1,12 +1,12 @@
 <div align="center">
 
-# Open Code Studio
+# VoltCode
 
 **AI-powered IDE for generating and previewing web applications**
 
 A modern desktop application built with Tauri + React + TypeScript, featuring chat-based code generation with multiple AI backends.
 
-![Open Code Studio](Screenshots/opencode-claudecode.jpeg)
+![VoltCode](Screenshots/voltcode-claudecode.jpeg)
 
 </div>
 
@@ -21,25 +21,36 @@ A modern desktop application built with Tauri + React + TypeScript, featuring ch
 - 📱 **Responsive Preview** - Toggle between mobile and desktop viewports
 - 🔌 **MCP Server Support** - Configure Model Context Protocol servers (stdio & HTTP)
 - 📦 **Git Integration** - Built-in Git support for version control
+- 🔄 **Switch AI Agent** - Easily switch between different AI agents
+- 📋 **Task Panel** - Track and manage coding tasks
 
 ## 📸 Screenshots
 
 ### Main Interface
-![Open Code Studio with Claude Code](Screenshots/opencode-claudecode.jpeg)
+![VoltCode with Claude Code](Screenshots/voltcode-claudecode.jpeg)
+
+### Vibe Coding with Live Preview
+![Vibe Coding with Live Preview](Screenshots/voltcode-vibecoding.jpeg)
 
 ### MCP Server Configuration
-![MCP Server Configuration](Screenshots/opencode-claudecode-mcp-server.jpeg)
+![MCP Server Configuration](Screenshots/voltcode-claudecode-mcp-server.jpeg)
 
 ### MCP Server Test
-![MCP Server Test](Screenshots/opencode-claudecode-mcp-server-test.jpeg)
+![MCP Server Test](Screenshots/voltcode-claudecode-mcp-server-test.jpeg)
 
 ### Git Integration
-![Git Integration](Screenshots/opencode-git.jpeg)
+![Git Integration](Screenshots/voltcode-git.jpeg)
+
+### Switch AI Agent
+![Switch AI Agent](Screenshots/voltcode-switch-agent.jpeg)
+
+### Task Panel
+![Task Panel](Screenshots/voltcode-task-panel.jpeg)
 
 ## 🏗️ Architecture
 
 ```
-opencode/
+voltcode/
 ├── App.tsx                 # Main application orchestrator
 ├── components/
 │   ├── ChatPanel.tsx       # Chat interface with AI
@@ -74,8 +85,8 @@ opencode/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/user/opencode.git
-   cd opencode
+   git clone https://github.com/stevensu1977/voltcode.git
+   cd voltcode
    ```
 
 2. **Install dependencies**
@@ -127,7 +138,7 @@ opencode/
 
 ## 🔌 AI Tools
 
-Open Code Studio supports multiple AI backends:
+VoltCode supports multiple AI backends:
 
 - **Claude Code** - Anthropic's Claude with coding capabilities
 - **Gemini** - Google's Gemini Pro with thinking budget
