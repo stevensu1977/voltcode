@@ -116,6 +116,31 @@ voltcode/
    pnpm run tauri:build
    ```
 
+### Configure Claude Code with Amazon Bedrock
+
+To use Claude Code with Amazon Bedrock, set the following environment variables:
+
+```bash
+# Set Claude to use Amazon Bedrock
+export CLAUDE_CODE_USE_BEDROCK=1
+
+# Configure AWS region
+export AWS_REGION=us-west-2
+
+# Optional: Specify Bedrock model (defaults to Claude Sonnet)
+export ANTHROPIC_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
+
+# Ensure AWS credentials are configured
+# Option 1: Use AWS CLI profile
+export AWS_PROFILE=your-profile
+
+# Option 2: Use access keys directly
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+```
+
+> **Note**: Make sure you have enabled Claude models in your AWS Bedrock console and have the necessary IAM permissions.
+
 ## 🛠️ Tech Stack
 
 | Layer | Technology |
