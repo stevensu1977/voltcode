@@ -25,12 +25,30 @@ export interface SlashCommandContext {
     used: number;
     total: number;
   };
+  // Task mode callbacks
+  projectDir?: string;
+  currentSession?: import('../types').ChatSession;
+  createTask?: (title: string) => Promise<void>;
+  updateTaskStatus?: (status: import('../types').TaskStatus) => void;
+  addTaskItem?: (title: string) => void;
+  completeTaskItem?: (index: number) => void;
+  getTaskStats?: () => {
+    totalItems: number;
+    completedItems: number;
+    elapsedTime: number;
+    progress: number;
+  };
+  getAllTasks?: () => Array<{
+    toolId: string;
+    session: import('../types').ChatSession;
+  }>;
 }
 
 export interface SlashCommandResult {
   success: boolean;
   message: string;
   preventSend?: boolean; // If true, don't send message to Claude
+  autoSendMessage?: string; // If set, automatically send this message to the AI after command completes
 }
 
 /**
@@ -377,6 +395,296 @@ export const slashCommands: Record<string, SlashCommand> = {
         message: `✓ Switched to ${normalizedAgent} agent\n${selectedAgent?.description || ''}`,
         preventSend: true
       };
+    }
+  },
+
+  task: {
+    name: 'task',
+    description: 'Task management commands (create, status, pause, resume, done, add, check, list)',
+    aliases: ['t'],
+    execute: async (args, context) => {
+      // Dynamic imports for task functionality
+      const { isTaskSession, TaskStatus } = await import('../types');
+      const { formatTimeCompact, getStatusEmoji, getStatusText } = await import('./todoParser');
+
+      const subcommand = args[0]?.toLowerCase() || 'status';
+      const subArgs = args.slice(1);
+
+      // Helper to check if current session is a task
+      const isCurrentTask = context.currentSession && isTaskSession(context.currentSession);
+
+      switch (subcommand) {
+        case 'create':
+        case 'new': {
+          const title = subArgs.join(' ');
+          if (!title) {
+            return {
+              success: false,
+              message: 'Usage: /task create <title>\n\nExample: /task create Fix login page bug',
+              preventSend: true
+            };
+          }
+
+          if (!context.projectDir) {
+            return {
+              success: false,
+              message: 'No project directory set. Please open a project first.',
+              preventSend: true
+            };
+          }
+
+          if (!context.createTask) {
+            return {
+              success: false,
+              message: 'Task creation is not available in this context.',
+              preventSend: true
+            };
+          }
+
+          try {
+            await context.createTask(title);
+            // Build the auto-send message to start the task
+            const taskPrompt = `I need help with the following task: "${title}"
+
+Please analyze what needs to be done and help me complete this task. Start by understanding the requirements and then proceed with the implementation.`;
+
+            return {
+              success: true,
+              message: `✓ Task created: **${title}**\n\nTimer started. Sending task to AI...`,
+              preventSend: true,
+              autoSendMessage: taskPrompt
+            };
+          } catch (error) {
+            return {
+              success: false,
+              message: `Failed to create task: ${error}`,
+              preventSend: true
+            };
+          }
+        }
+
+        case 'status':
+        case 's': {
+          if (!isCurrentTask) {
+            return {
+              success: true,
+              message: '📋 No active task in this session.\n\nUse `/task create <title>` to start a new task.',
+              preventSend: true
+            };
+          }
+
+          const stats = context.getTaskStats?.() || { totalItems: 0, completedItems: 0, elapsedTime: 0, progress: 0 };
+          const session = context.currentSession!;
+          const task = (session as any).task;
+          const statusEmoji = getStatusEmoji(task.status);
+          const statusText = getStatusText(task.status);
+          const timeDisplay = formatTimeCompact(stats.elapsedTime);
+
+          let message = `## ${session.title}\n\n`;
+          message += `**Status:** ${statusEmoji} ${statusText}\n`;
+          message += `**Time:** ${timeDisplay}\n`;
+          message += `**Progress:** ${stats.completedItems}/${stats.totalItems} items (${stats.progress}%)\n\n`;
+
+          // Show TODO items
+          if (task.items.length > 0) {
+            message += '### TODO Items\n';
+            task.items.forEach((item: any, index: number) => {
+              const checkbox = item.completed ? '☑' : '☐';
+              message += `${index + 1}. ${checkbox} ${item.title}\n`;
+            });
+          } else {
+            message += '_No TODO items. Use `/task add <item>` to add one._';
+          }
+
+          return {
+            success: true,
+            message,
+            preventSend: true
+          };
+        }
+
+        case 'pause':
+        case 'p': {
+          if (!isCurrentTask) {
+            return {
+              success: false,
+              message: 'No active task to pause.',
+              preventSend: true
+            };
+          }
+
+          const task = (context.currentSession as any).task;
+          if (task.status !== TaskStatus.IN_PROGRESS) {
+            return {
+              success: false,
+              message: `Cannot pause: task is ${getStatusText(task.status).toLowerCase()}.`,
+              preventSend: true
+            };
+          }
+
+          context.updateTaskStatus?.(TaskStatus.PAUSED);
+          return {
+            success: true,
+            message: '⏸ Task paused. Timer stopped.\n\nUse `/task resume` to continue.',
+            preventSend: true
+          };
+        }
+
+        case 'resume':
+        case 'r': {
+          if (!isCurrentTask) {
+            return {
+              success: false,
+              message: 'No task to resume.',
+              preventSend: true
+            };
+          }
+
+          const task = (context.currentSession as any).task;
+          if (task.status !== TaskStatus.PAUSED) {
+            return {
+              success: false,
+              message: `Cannot resume: task is ${getStatusText(task.status).toLowerCase()}.`,
+              preventSend: true
+            };
+          }
+
+          context.updateTaskStatus?.(TaskStatus.IN_PROGRESS);
+          return {
+            success: true,
+            message: '▶️ Task resumed. Timer running.\n\nUse `/task pause` to pause again.',
+            preventSend: true
+          };
+        }
+
+        case 'done':
+        case 'complete':
+        case 'd': {
+          if (!isCurrentTask) {
+            return {
+              success: false,
+              message: 'No active task to complete.',
+              preventSend: true
+            };
+          }
+
+          const stats = context.getTaskStats?.() || { totalItems: 0, completedItems: 0, elapsedTime: 0, progress: 0 };
+          const timeDisplay = formatTimeCompact(stats.elapsedTime);
+
+          context.updateTaskStatus?.(TaskStatus.COMPLETED);
+          return {
+            success: true,
+            message: `✅ Task completed!\n\n**Time spent:** ${timeDisplay}\n**Items completed:** ${stats.completedItems}/${stats.totalItems}`,
+            preventSend: true
+          };
+        }
+
+        case 'add':
+        case 'a': {
+          const itemTitle = subArgs.join(' ');
+          if (!itemTitle) {
+            return {
+              success: false,
+              message: 'Usage: /task add <item description>\n\nExample: /task add Write unit tests',
+              preventSend: true
+            };
+          }
+
+          if (!isCurrentTask) {
+            return {
+              success: false,
+              message: 'No active task. Create a task first with `/task create <title>`.',
+              preventSend: true
+            };
+          }
+
+          context.addTaskItem?.(itemTitle);
+          return {
+            success: true,
+            message: `✓ Added: ${itemTitle}`,
+            preventSend: true
+          };
+        }
+
+        case 'check':
+        case 'x': {
+          const indexStr = subArgs[0];
+          const index = parseInt(indexStr, 10);
+
+          if (isNaN(index) || index < 1) {
+            return {
+              success: false,
+              message: 'Usage: /task check <number>\n\nExample: /task check 1',
+              preventSend: true
+            };
+          }
+
+          if (!isCurrentTask) {
+            return {
+              success: false,
+              message: 'No active task.',
+              preventSend: true
+            };
+          }
+
+          const task = (context.currentSession as any).task;
+          if (index > task.items.length) {
+            return {
+              success: false,
+              message: `Invalid item number. Task has ${task.items.length} items.`,
+              preventSend: true
+            };
+          }
+
+          context.completeTaskItem?.(index);
+          const item = task.items[index - 1];
+          return {
+            success: true,
+            message: `☑ Completed: ${item.title}`,
+            preventSend: true
+          };
+        }
+
+        case 'list':
+        case 'ls': {
+          const tasks = context.getAllTasks?.() || [];
+
+          if (tasks.length === 0) {
+            return {
+              success: true,
+              message: '📋 No tasks found.\n\nUse `/task create <title>` to create a new task.',
+              preventSend: true
+            };
+          }
+
+          let message = `## All Tasks (${tasks.length})\n\n`;
+
+          for (const { toolId, session } of tasks) {
+            if (isTaskSession(session)) {
+              const task = session.task;
+              const statusEmoji = getStatusEmoji(task.status);
+              const timeDisplay = formatTimeCompact(task.totalTimeSpent);
+              const completedCount = task.items.filter(i => i.completed).length;
+
+              message += `${statusEmoji} **${session.title}** (${toolId})\n`;
+              message += `   Time: ${timeDisplay} | Items: ${completedCount}/${task.items.length}\n\n`;
+            }
+          }
+
+          return {
+            success: true,
+            message,
+            preventSend: true
+          };
+        }
+
+        default:
+          return {
+            success: false,
+            message: `Unknown task command: ${subcommand}\n\nAvailable commands:\n- /task create <title> - Create a new task\n- /task status - View current task status\n- /task pause - Pause the timer\n- /task resume - Resume the timer\n- /task done - Mark task complete\n- /task add <item> - Add a TODO item\n- /task check <n> - Complete item #n\n- /task list - List all tasks`,
+            preventSend: true
+          };
+      }
     }
   }
 };

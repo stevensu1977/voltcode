@@ -1,12 +1,96 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Terminal as TerminalIcon, RotateCw, Globe, Monitor, Smartphone, FolderOpen, File, Folder, ChevronRight, ChevronDown, RefreshCw, X, Plus, Trash2, Edit3, FilePlus, FolderPlus, Image, ZoomIn, ZoomOut, GitBranch, GitCommit as GitCommitIcon, Send, Sparkles } from 'lucide-react';
-import { Tab, FileItem, TerminalInstance } from '../types';
+import { Play, Terminal as TerminalIcon, RotateCw, Globe, Monitor, Smartphone, FolderOpen, File, Folder, ChevronRight, ChevronDown, RefreshCw, X, Plus, Trash2, Edit3, FilePlus, FolderPlus, Image, ZoomIn, ZoomOut, GitBranch, GitCommit as GitCommitIcon, Send, Sparkles, ListTodo } from 'lucide-react';
+import { Tab, FileItem, TerminalInstance, ToolId, ToolChatHistory, TaskStatus, ParallelTask, QueueStats } from '../types';
+import TaskPanel from './TaskPanel';
 import { invoke } from '@tauri-apps/api/core';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 // Check if file is an image
 const isImageFile = (fileName: string): boolean => {
   const ext = fileName.split('.').pop()?.toLowerCase();
   return ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'].includes(ext || '');
+};
+
+// Get syntax highlighting language from file extension
+const getLanguageFromExtension = (fileName: string): string | null => {
+  const ext = fileName.split('.').pop()?.toLowerCase();
+  const languageMap: Record<string, string> = {
+    // Web
+    'js': 'javascript',
+    'jsx': 'jsx',
+    'ts': 'typescript',
+    'tsx': 'tsx',
+    'html': 'html',
+    'htm': 'html',
+    'css': 'css',
+    'scss': 'scss',
+    'sass': 'sass',
+    'less': 'less',
+    'json': 'json',
+    'xml': 'xml',
+    'svg': 'svg',
+    // Backend
+    'go': 'go',
+    'rs': 'rust',
+    'py': 'python',
+    'rb': 'ruby',
+    'java': 'java',
+    'kt': 'kotlin',
+    'kts': 'kotlin',
+    'scala': 'scala',
+    'swift': 'swift',
+    'c': 'c',
+    'cpp': 'cpp',
+    'cc': 'cpp',
+    'cxx': 'cpp',
+    'h': 'c',
+    'hpp': 'cpp',
+    'cs': 'csharp',
+    'php': 'php',
+    // Shell & Config
+    'sh': 'bash',
+    'bash': 'bash',
+    'zsh': 'bash',
+    'fish': 'bash',
+    'ps1': 'powershell',
+    'bat': 'batch',
+    'cmd': 'batch',
+    // Config files
+    'yaml': 'yaml',
+    'yml': 'yaml',
+    'toml': 'toml',
+    'ini': 'ini',
+    'conf': 'ini',
+    'env': 'bash',
+    // Data
+    'sql': 'sql',
+    'graphql': 'graphql',
+    'gql': 'graphql',
+    // Markup & Docs
+    'md': 'markdown',
+    'mdx': 'mdx',
+    'tex': 'latex',
+    // Other
+    'dockerfile': 'docker',
+    'makefile': 'makefile',
+    'cmake': 'cmake',
+    'gradle': 'gradle',
+    'lua': 'lua',
+    'vim': 'vim',
+    'diff': 'diff',
+    'patch': 'diff',
+    'gitignore': 'gitignore',
+  };
+
+  // Handle special filenames without extensions
+  const fileNameLower = fileName.toLowerCase();
+  if (fileNameLower === 'dockerfile') return 'docker';
+  if (fileNameLower === 'makefile') return 'makefile';
+  if (fileNameLower === '.gitignore') return 'gitignore';
+  if (fileNameLower === '.env' || fileNameLower.startsWith('.env.')) return 'bash';
+
+  return languageMap[ext || ''] || null;
 };
 
 // Image Preview Component
@@ -571,6 +655,22 @@ interface WorkspacePanelProps {
   onCreateTerminal: () => void;
   onSendInput: (terminalId: string, data: string) => void;
   onGenerateCommitMessage?: (diff: string) => Promise<string>;
+  // Task Panel props (Phase 2.1)
+  toolHistory?: Record<ToolId, ToolChatHistory>;
+  onNavigateToTask?: (toolId: ToolId, sessionId: string) => void;
+  onUpdateTaskStatus?: (toolId: ToolId, sessionId: string, status: TaskStatus) => void;
+  // Parallel task props (Phase 2.3)
+  parallelTasks?: {
+    running: ParallelTask[];
+    queued: ParallelTask[];
+    paused: ParallelTask[];
+  };
+  queueStats?: QueueStats;
+  onPauseParallelTask?: (taskId: string) => void;
+  onResumeParallelTask?: (taskId: string) => void;
+  onCancelParallelTask?: (taskId: string) => void;
+  onMoveTaskUp?: (taskId: string) => void;
+  onMoveTaskDown?: (taskId: string) => void;
 }
 
 const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
@@ -584,7 +684,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   onCloseTerminal,
   onCreateTerminal,
   onSendInput,
-  onGenerateCommitMessage
+  onGenerateCommitMessage,
+  toolHistory,
+  onNavigateToTask,
+  onUpdateTaskStatus,
+  // Parallel task props (Phase 2.3)
+  parallelTasks,
+  queueStats,
+  onPauseParallelTask,
+  onResumeParallelTask,
+  onCancelParallelTask,
+  onMoveTaskUp,
+  onMoveTaskDown
 }) => {
   const [iframeKey, setIframeKey] = useState(0);
   const [viewport, setViewport] = useState<'desktop' | 'mobile'>('desktop');
@@ -653,11 +764,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (activeTab === Tab.TERMINAL && activeTerminalId) {
       const terminalHandle = terminalRefs.current.get(activeTerminalId);
       if (terminalHandle) {
-        // Small delay to ensure DOM is ready
+        // Delay to ensure DOM is ready after tab switch
         setTimeout(() => {
           terminalHandle.fit();
           terminalHandle.focus();
-        }, 50);
+          // Force a full refresh to fix display issues after tab switch
+          setTimeout(() => {
+            terminalHandle.refresh();
+          }, 50);
+        }, 100);
       }
     }
   }, [activeTab, activeTerminalId]);
@@ -670,6 +785,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       terminalRefs.current.delete(terminalId);
     }
   }, []);
+
+  // Handle local link clicks from terminal - open in preview panel
+  const handleLocalLinkClick = useCallback((url: string) => {
+    console.log('[WorkspacePanel] Opening local URL in preview:', url);
+    setPreviewUrl(url);
+    setPreviewMode('url');
+    setIframeKey(prev => prev + 1);
+    setActiveTab(Tab.PREVIEW);
+  }, [setActiveTab]);
 
   const handleRefresh = () => {
     setIframeKey(prev => prev + 1);
@@ -1029,6 +1153,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             icon={<TerminalIcon size={14} />}
             label="Terminal"
           />
+          <TabButton
+            active={activeTab === Tab.TASKS}
+            onClick={() => setActiveTab(Tab.TASKS)}
+            icon={<ListTodo size={14} />}
+            label="Tasks"
+          />
         </div>
 
         {activeTab === Tab.PREVIEW && (
@@ -1271,11 +1401,41 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                   </div>
                   {isImageFile(selectedFile) ? (
                     <ImagePreview filePath={selectedFile} />
-                  ) : (
-                    <pre className="p-4 text-sm font-mono text-gray-300 leading-relaxed flex-1 overflow-auto">
-                      <code>{fileContent}</code>
-                    </pre>
-                  )}
+                  ) : (() => {
+                    const language = getLanguageFromExtension(selectedFile);
+                    if (language) {
+                      return (
+                        <SyntaxHighlighter
+                          language={language}
+                          style={vscDarkPlus}
+                          showLineNumbers
+                          wrapLines
+                          customStyle={{
+                            margin: 0,
+                            padding: '1rem',
+                            fontSize: '0.875rem',
+                            lineHeight: '1.625',
+                            flex: 1,
+                            overflow: 'auto',
+                            background: 'transparent',
+                          }}
+                          lineNumberStyle={{
+                            minWidth: '3em',
+                            paddingRight: '1em',
+                            color: '#6b7280',
+                            userSelect: 'none',
+                          }}
+                        >
+                          {fileContent}
+                        </SyntaxHighlighter>
+                      );
+                    }
+                    return (
+                      <pre className="p-4 text-sm font-mono text-gray-300 leading-relaxed flex-1 overflow-auto">
+                        <code>{fileContent}</code>
+                      </pre>
+                    );
+                  })()}
                 </div>
               ) : (
                 <div className="flex items-center justify-center h-full text-gray-600">
@@ -1532,11 +1692,37 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                     ref={setTerminalRef(terminal.id)}
                     terminalId={terminal.id}
                     onData={(data) => onSendInput(terminal.id, data)}
+                    onLocalLinkClick={handleLocalLinkClick}
                   />
                 </div>
               ))
             )}
           </div>
+        </div>
+
+        {/* TASKS TAB */}
+        <div className={`w-full h-full absolute inset-0 bg-ide-bg overflow-auto ${activeTab === Tab.TASKS ? 'opacity-100 z-10' : 'opacity-0 -z-10'}`}>
+          {toolHistory && onNavigateToTask && onUpdateTaskStatus ? (
+            <TaskPanel
+              toolHistory={toolHistory}
+              onNavigateToTask={onNavigateToTask}
+              onUpdateTaskStatus={onUpdateTaskStatus}
+              parallelTasks={parallelTasks}
+              queueStats={queueStats}
+              onPauseParallelTask={onPauseParallelTask}
+              onResumeParallelTask={onResumeParallelTask}
+              onCancelParallelTask={onCancelParallelTask}
+              onMoveTaskUp={onMoveTaskUp}
+              onMoveTaskDown={onMoveTaskDown}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full text-gray-500">
+              <div className="text-center">
+                <ListTodo size={48} className="mx-auto mb-4 opacity-50" />
+                <p>Task panel not available</p>
+              </div>
+            </div>
+          )}
         </div>
 
       </div>
