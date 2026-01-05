@@ -1,0 +1,25 @@
+{
+  "name": "StartDevServer",
+  "description": "Start a development server (like pnpm dev, npm run dev) in the background. The server will continue running even after Claude finishes. Use this for long-running processes like Vite, Next.js, or any dev server.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "The command to run (e.g., 'pnpm', 'npm', 'yarn')"
+      },
+      "args": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Arguments for the command (e.g., ['dev'], ['run', 'dev'])"
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Working directory for the command. Should be the project directory."
+      }
+    },
+    "required": ["command", "args", "cwd"]
+  }
+}

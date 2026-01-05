@@ -1,0 +1,3 @@
+# Exclude Resources folder from indexing
+Resources/
+
