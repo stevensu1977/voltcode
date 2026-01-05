@@ -42,6 +42,11 @@ export class CLIRouter {
   private pendingDevServerToolId: string | null = null;
   private currentTerminalId: string | null = null;
 
+  // Parallel task execution support (Phase 2.3)
+  private taskId: string | null = null;
+  private abortController: AbortController | null = null;
+  private isAborted: boolean = false;
+
   /**
    * 设置项目目录
    */
@@ -164,6 +169,80 @@ export class CLIRouter {
       totalTokens: 0,
       totalTurns: 0
     };
+  }
+
+  // ============================================
+  // Parallel Task Execution Methods (Phase 2.3)
+  // ============================================
+
+  /**
+   * Set task ID for this CLI instance
+   */
+  setTaskId(taskId: string): void {
+    this.taskId = taskId;
+    console.log('[CLIRouter] Task ID set to:', taskId);
+  }
+
+  /**
+   * Get task ID
+   */
+  getTaskId(): string | null {
+    return this.taskId;
+  }
+
+  /**
+   * Abort the current operation
+   */
+  abort(): void {
+    this.isAborted = true;
+    if (this.abortController) {
+      this.abortController.abort();
+      console.log('[CLIRouter] Aborted task:', this.taskId);
+    }
+  }
+
+  /**
+   * Check if aborted
+   */
+  isOperationAborted(): boolean {
+    return this.isAborted;
+  }
+
+  /**
+   * Reset abort state (for reuse)
+   */
+  resetAbort(): void {
+    this.isAborted = false;
+    this.abortController = new AbortController();
+  }
+
+  /**
+   * Clone this CLI instance with current settings
+   * Used for parallel task execution to isolate state
+   */
+  clone(): CLIRouter {
+    const newRouter = new CLIRouter();
+
+    // Copy all settings
+    if (this.projectDir) {
+      newRouter.setProjectDir(this.projectDir);
+    }
+    newRouter.setPermissionMode(this.permissionMode);
+    newRouter.setAllowedTools([...this.allowedTools]);
+    newRouter.setModel(this.model);
+    newRouter.setProvider(this.provider);
+    newRouter.setBedrockRegion(this.bedrockRegion);
+    newRouter.setBedrockProfile(this.bedrockProfile);
+    if (this.agent) {
+      newRouter.setAgent(this.agent);
+    }
+
+    // Initialize abort controller for the new instance
+    newRouter.resetAbort();
+
+    console.log('[CLIRouter] Cloned instance for parallel execution');
+
+    return newRouter;
   }
 
   /**

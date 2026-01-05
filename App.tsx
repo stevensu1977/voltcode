@@ -5,50 +5,32 @@ import WorkspacePanel from './components/WorkspacePanel';
 import ConfigPanel from './components/ConfigPanel';
 import ProjectSelector from './components/ProjectSelector';
 import ProfilePanel from './components/ProfilePanel';
-import { Message, Sender, Tab, ToolId, TerminalInstance, ChatSession, ToolChatHistory } from './types';
+import AgentSwitchDialog from './components/AgentSwitchDialog';
+import { Message, Sender, Tab, ToolId, TerminalInstance, ToolChatHistory, TaskStatus, isTaskSession, ChatSession, ContextTransferMode, ParallelTask, QueueStats, ParallelTaskConfig, ExecutionState } from './types';
+import { getAgentName, getSummaryPrompt } from './services/agentAnalyzer';
 import { cliRouter } from './services/cliRouter';
+import { ParallelTaskManager } from './services/parallelTaskManager';
 import { sidecarManager } from './services/sidecar';
 import { parseSlashCommand, executeSlashCommand } from './services/slashCommands';
-
-const TOOL_NAMES: Record<ToolId, string> = {
-  claude: 'Claude Code',
-  gemini: 'Gemini CLI',
-  codex: 'Codex CLI',
-  kiro: 'Kiro CLI'
-};
-
-// Create a new chat session
-const createNewSession = (toolId: ToolId): ChatSession => {
-  const now = Date.now();
-  return {
-    id: `${toolId}-${now}-${Math.random().toString(36).substr(2, 9)}`,
-    title: 'New Chat',
-    messages: [{
-      id: `${toolId}-welcome-${now}`,
-      text: `Hello! I'm ${TOOL_NAMES[toolId]}. I can help you build web apps, components, and prototypes instantly. Start chatting to begin!`,
-      sender: Sender.AGENT,
-      timestamp: now
-    }],
-    createdAt: now,
-    updatedAt: now
-  };
-};
-
-// Initial state for all tools with chat history
-const createInitialToolHistory = (): Record<ToolId, ToolChatHistory> => {
-  const tools: ToolId[] = ['claude', 'gemini', 'codex', 'kiro'];
-  const history: Record<ToolId, ToolChatHistory> = {} as Record<ToolId, ToolChatHistory>;
-
-  tools.forEach(toolId => {
-    const session = createNewSession(toolId);
-    history[toolId] = {
-      sessions: [session],
-      activeSessionId: session.id
-    };
-  });
-
-  return history;
-};
+import {
+  createNewSession,
+  createNewTaskSession,
+  createInitialToolHistory,
+  loadSessions,
+  saveSessions,
+  saveSessionsImmediate,
+  getAllTaskSessions
+} from './services/sessionStore';
+import {
+  updateTaskStatus as updateTaskStatusFn,
+  addTaskItem as addTaskItemFn,
+  toggleTaskItem,
+  completeTaskItemByIndex,
+  getTaskStats,
+  getTaskElapsedTime,
+  syncTaskToFile
+} from './services/taskStore';
+import { listen } from '@tauri-apps/api/event';
 
 const App: React.FC = () => {
   // Project directory state
@@ -56,6 +38,7 @@ const App: React.FC = () => {
 
   // Chat history per tool
   const [toolHistory, setToolHistory] = useState<Record<ToolId, ToolChatHistory>>(createInitialToolHistory);
+  const [isSessionsLoaded, setIsSessionsLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>(Tab.PREVIEW);
   const [generatedCode, setGeneratedCode] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -67,6 +50,30 @@ const App: React.FC = () => {
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [currentAgent, setCurrentAgent] = useState<string>('');
+
+  // Agent switch dialog state (Phase 1.3)
+  const [isAgentSwitchDialogOpen, setIsAgentSwitchDialogOpen] = useState(false);
+  const [pendingToolSwitch, setPendingToolSwitch] = useState<ToolId | null>(null);
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+
+  // Parallel task execution state (Phase 2.3)
+  const [taskManager] = useState(() => new ParallelTaskManager());
+  const [queueStats, setQueueStats] = useState<QueueStats>({
+    running: 0,
+    queued: 0,
+    paused: 0,
+    completed: 0,
+    maxConcurrency: 3
+  });
+  const [parallelTasks, setParallelTasks] = useState<{
+    running: ParallelTask[];
+    queued: ParallelTask[];
+    paused: ParallelTask[];
+  }>({ running: [], queued: [], paused: [] });
+  const [parallelConfig, setParallelConfig] = useState<ParallelTaskConfig>({
+    maxConcurrency: 3,
+    autoStartQueued: true
+  });
 
   // Get current tool's active session
   const currentHistory = toolHistory[activeTool];
@@ -163,6 +170,232 @@ const App: React.FC = () => {
       };
     });
   };
+
+  // ============================================
+  // Task Mode Functions
+  // ============================================
+
+  // Create a new task session
+  const handleCreateTask = async (title: string) => {
+    if (!projectDir) return;
+
+    const newSession = await createNewTaskSession(activeTool, title, projectDir);
+    setToolHistory(prev => ({
+      ...prev,
+      [activeTool]: {
+        sessions: [newSession, ...prev[activeTool].sessions],
+        activeSessionId: newSession.id
+      }
+    }));
+    setGeneratedCode(null);
+  };
+
+  // Update task status (pause, resume, complete)
+  const handleUpdateTaskStatus = (status: TaskStatus) => {
+    setToolHistory(prev => {
+      const toolHist = prev[activeTool];
+      const sessionIndex = toolHist.sessions.findIndex(s => s.id === toolHist.activeSessionId);
+      if (sessionIndex === -1) return prev;
+
+      const session = toolHist.sessions[sessionIndex];
+      if (!isTaskSession(session)) return prev;
+
+      const updatedSession = updateTaskStatusFn(session, status);
+
+      // Sync to TODO.md file
+      syncTaskToFile(updatedSession);
+
+      const updatedSessions = [...toolHist.sessions];
+      updatedSessions[sessionIndex] = updatedSession;
+
+      return {
+        ...prev,
+        [activeTool]: {
+          ...toolHist,
+          sessions: updatedSessions
+        }
+      };
+    });
+  };
+
+  // Add a TODO item to current task
+  const handleAddTaskItem = (itemTitle: string) => {
+    setToolHistory(prev => {
+      const toolHist = prev[activeTool];
+      const sessionIndex = toolHist.sessions.findIndex(s => s.id === toolHist.activeSessionId);
+      if (sessionIndex === -1) return prev;
+
+      const session = toolHist.sessions[sessionIndex];
+      if (!isTaskSession(session)) return prev;
+
+      const updatedSession = addTaskItemFn(session, itemTitle);
+
+      // Sync to TODO.md file
+      syncTaskToFile(updatedSession);
+
+      const updatedSessions = [...toolHist.sessions];
+      updatedSessions[sessionIndex] = updatedSession;
+
+      return {
+        ...prev,
+        [activeTool]: {
+          ...toolHist,
+          sessions: updatedSessions
+        }
+      };
+    });
+  };
+
+  // Toggle a TODO item by ID
+  const handleToggleTaskItem = (itemId: string) => {
+    setToolHistory(prev => {
+      const toolHist = prev[activeTool];
+      const sessionIndex = toolHist.sessions.findIndex(s => s.id === toolHist.activeSessionId);
+      if (sessionIndex === -1) return prev;
+
+      const session = toolHist.sessions[sessionIndex];
+      if (!isTaskSession(session)) return prev;
+
+      const updatedSession = toggleTaskItem(session, itemId);
+
+      // Sync to TODO.md file
+      syncTaskToFile(updatedSession);
+
+      const updatedSessions = [...toolHist.sessions];
+      updatedSessions[sessionIndex] = updatedSession;
+
+      return {
+        ...prev,
+        [activeTool]: {
+          ...toolHist,
+          sessions: updatedSessions
+        }
+      };
+    });
+  };
+
+  // Complete a TODO item by index (1-based, for slash commands)
+  const handleCompleteTaskItemByIndex = (index: number) => {
+    setToolHistory(prev => {
+      const toolHist = prev[activeTool];
+      const sessionIndex = toolHist.sessions.findIndex(s => s.id === toolHist.activeSessionId);
+      if (sessionIndex === -1) return prev;
+
+      const session = toolHist.sessions[sessionIndex];
+      if (!isTaskSession(session)) return prev;
+
+      const updatedSession = completeTaskItemByIndex(session, index);
+
+      // Sync to TODO.md file
+      syncTaskToFile(updatedSession);
+
+      const updatedSessions = [...toolHist.sessions];
+      updatedSessions[sessionIndex] = updatedSession;
+
+      return {
+        ...prev,
+        [activeTool]: {
+          ...toolHist,
+          sessions: updatedSessions
+        }
+      };
+    });
+  };
+
+  // Get stats for current task
+  const handleGetTaskStats = () => {
+    if (!activeSession || !isTaskSession(activeSession)) {
+      return { totalItems: 0, completedItems: 0, elapsedTime: 0, progress: 0 };
+    }
+    return getTaskStats(activeSession);
+  };
+
+  // Get all tasks across tools
+  const handleGetAllTasks = () => {
+    return getAllTaskSessions(toolHistory);
+  };
+
+  // Load saved sessions on startup
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const savedSessions = await loadSessions();
+        if (savedSessions) {
+          setToolHistory(savedSessions);
+          console.log('[App] Loaded saved sessions');
+        }
+      } catch (error) {
+        console.error('[App] Failed to load sessions:', error);
+      } finally {
+        setIsSessionsLoaded(true);
+      }
+    };
+    load();
+  }, []);
+
+  // Use ref to always have latest toolHistory for async callbacks
+  const toolHistoryRef = useRef(toolHistory);
+  useEffect(() => {
+    toolHistoryRef.current = toolHistory;
+  }, [toolHistory]);
+
+  // Save sessions when they change (after initial load)
+  useEffect(() => {
+    if (isSessionsLoaded) {
+      saveSessions(toolHistory);
+    }
+  }, [toolHistory, isSessionsLoaded]);
+
+  // Periodic auto-save as safety net (every 5 seconds)
+  // This ensures data is saved even if Ctrl+C kills the process
+  useEffect(() => {
+    if (!isSessionsLoaded) return;
+
+    const autoSaveInterval = setInterval(() => {
+      console.log('[App] Auto-save triggered');
+      saveSessionsImmediate(toolHistoryRef.current);
+    }, 5000);
+
+    return () => clearInterval(autoSaveInterval);
+  }, [isSessionsLoaded]);
+
+  // Save sessions immediately before app closes (Tauri + browser events)
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      console.log('[App] beforeunload - saving sessions');
+      saveSessionsImmediate(toolHistoryRef.current);
+    };
+
+    // Browser beforeunload event
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    // Tauri window close event - more reliable in Tauri
+    let unlistenClose: (() => void) | null = null;
+    listen('tauri://close-requested', () => {
+      console.log('[App] Tauri close-requested - saving sessions');
+      saveSessionsImmediate(toolHistoryRef.current);
+    }).then(unlisten => {
+      unlistenClose = unlisten;
+    });
+
+    // Also listen for destroy event
+    let unlistenDestroy: (() => void) | null = null;
+    listen('tauri://destroyed', () => {
+      console.log('[App] Tauri destroyed - saving sessions');
+      saveSessionsImmediate(toolHistoryRef.current);
+    }).then(unlisten => {
+      unlistenDestroy = unlisten;
+    });
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      unlistenClose?.();
+      unlistenDestroy?.();
+      // Also save when component unmounts
+      console.log('[App] Component unmount - saving sessions');
+      saveSessionsImmediate(toolHistoryRef.current);
+    };
+  }, []); // Empty deps - use ref for latest state
 
   // Set project directory in CLI router when selected
   useEffect(() => {
@@ -370,6 +603,251 @@ const App: React.FC = () => {
     // No switch message needed - each tool has its own context
   };
 
+  // ============================================
+  // Agent Switch Dialog Handlers (Phase 1.3)
+  // ============================================
+
+  // Open the agent switch dialog
+  const handleRequestAgentSwitch = (targetTool: ToolId) => {
+    setPendingToolSwitch(targetTool);
+    setIsAgentSwitchDialogOpen(true);
+  };
+
+  // Close the agent switch dialog
+  const handleCloseAgentSwitchDialog = () => {
+    setIsAgentSwitchDialogOpen(false);
+    setPendingToolSwitch(null);
+    setIsGeneratingSummary(false);
+  };
+
+  // Confirm the agent switch with context transfer
+  const handleConfirmAgentSwitch = async (
+    transferMode: ContextTransferMode,
+    messageCount?: number
+  ) => {
+    if (!pendingToolSwitch) return;
+
+    const targetTool = pendingToolSwitch;
+    const sourceToolName = getAgentName(activeTool);
+    const targetToolName = getAgentName(targetTool);
+
+    try {
+      if (transferMode === 'new') {
+        // Mode 1: Start fresh - just switch
+        setActiveTool(targetTool);
+        handleCloseAgentSwitchDialog();
+
+      } else if (transferMode === 'copy') {
+        // Mode 2: Copy recent messages
+        const msgCount = messageCount || 10;
+        const recentMessages = messages.slice(-msgCount);
+
+        // Switch to target tool
+        setActiveTool(targetTool);
+
+        // Create a new session for the target tool with copied messages
+        const newSession = createNewSession(targetTool);
+
+        // Add context notice and copied messages
+        const contextNotice: Message = {
+          id: `context-${Date.now()}`,
+          text: `📋 **Context transferred from ${sourceToolName}** (${recentMessages.length} messages)\n\n---`,
+          sender: Sender.AGENT,
+          timestamp: Date.now()
+        };
+
+        // Copy messages with new IDs
+        const copiedMessages = recentMessages.map((m, idx) => ({
+          ...m,
+          id: `copied-${Date.now()}-${idx}`
+        }));
+
+        newSession.messages = [
+          ...newSession.messages,
+          contextNotice,
+          ...copiedMessages
+        ];
+        newSession.title = `From ${sourceToolName}`;
+
+        // Add to target tool's history
+        setToolHistory(prev => ({
+          ...prev,
+          [targetTool]: {
+            sessions: [newSession, ...prev[targetTool].sessions],
+            activeSessionId: newSession.id
+          }
+        }));
+
+        handleCloseAgentSwitchDialog();
+
+      } else if (transferMode === 'summary') {
+        // Mode 3: Generate summary using current agent
+        setIsGeneratingSummary(true);
+
+        try {
+          // Generate summary using current agent
+          const summaryPrompt = getSummaryPrompt(messages);
+          const summaryResponse = await cliRouter.sendMessage(activeTool, summaryPrompt, []);
+          const summary = summaryResponse.content;
+
+          // Switch to target tool
+          setActiveTool(targetTool);
+
+          // Create new session with summary
+          const newSession = createNewSession(targetTool);
+
+          // Add summary as first message
+          const summaryMsg: Message = {
+            id: `summary-${Date.now()}`,
+            text: `📝 **Summary from ${sourceToolName}:**\n\n${summary}`,
+            sender: Sender.AGENT,
+            timestamp: Date.now()
+          };
+
+          newSession.messages = [...newSession.messages, summaryMsg];
+          newSession.title = `Summary from ${sourceToolName}`;
+
+          // Add to target tool's history
+          setToolHistory(prev => ({
+            ...prev,
+            [targetTool]: {
+              sessions: [newSession, ...prev[targetTool].sessions],
+              activeSessionId: newSession.id
+            }
+          }));
+
+          handleCloseAgentSwitchDialog();
+        } catch (error) {
+          console.error('[App] Failed to generate summary:', error);
+          // Fallback to just switching
+          setActiveTool(targetTool);
+          handleCloseAgentSwitchDialog();
+        }
+      }
+    } catch (error) {
+      console.error('[App] Agent switch error:', error);
+      handleCloseAgentSwitchDialog();
+    }
+  };
+
+  // ============================================
+  // Parallel Task Execution (Phase 2.3)
+  // ============================================
+
+  // Initialize ParallelTaskManager callbacks
+  useEffect(() => {
+    // Update queue stats callback
+    taskManager.setQueueChangeCallback((stats) => {
+      setQueueStats(stats);
+      // Update parallel tasks list
+      setParallelTasks({
+        running: taskManager.getRunningTasks(),
+        queued: taskManager.getQueuedTasks(),
+        paused: taskManager.getPausedTasks()
+      });
+    });
+
+    // Set base CLI for cloning settings
+    taskManager.setBaseCLI(cliRouter);
+
+    // Set terminal callbacks
+    taskManager.setTerminalCreateCallback(createTerminal);
+
+    console.log('[App] ParallelTaskManager initialized');
+
+    return () => {
+      taskManager.setQueueChangeCallback(null);
+    };
+  }, [taskManager]);
+
+  // Update base CLI settings when they change
+  useEffect(() => {
+    if (projectDir) {
+      taskManager.setBaseCLI(cliRouter);
+    }
+  }, [projectDir, taskManager]);
+
+  // Handle parallel config changes
+  const handleParallelConfigChange = (config: ParallelTaskConfig) => {
+    setParallelConfig(config);
+    taskManager.setMaxConcurrency(config.maxConcurrency);
+    console.log('[App] Parallel config updated:', config);
+  };
+
+  // Parallel task action handlers
+  const handlePauseParallelTask = (taskId: string) => {
+    taskManager.pauseTask(taskId);
+  };
+
+  const handleResumeParallelTask = (taskId: string) => {
+    taskManager.resumeTask(taskId);
+  };
+
+  const handleCancelParallelTask = (taskId: string) => {
+    taskManager.cancelTask(taskId);
+  };
+
+  const handleMoveParallelTaskUp = (taskId: string) => {
+    taskManager.moveTaskUp(taskId);
+  };
+
+  const handleMoveParallelTaskDown = (taskId: string) => {
+    taskManager.moveTaskDown(taskId);
+  };
+
+  // ============================================
+  // Task Panel Navigation Handlers (Phase 2.1)
+  // ============================================
+
+  // Navigate to a specific task session from the Task Panel
+  const handleNavigateToTask = (toolId: ToolId, sessionId: string) => {
+    console.log('[App] Navigating to task:', toolId, sessionId);
+    // Switch to the target tool
+    setActiveTool(toolId);
+    // Switch to the target session
+    setToolHistory(prev => ({
+      ...prev,
+      [toolId]: {
+        ...prev[toolId],
+        activeSessionId: sessionId
+      }
+    }));
+    // Clear generated code preview
+    setGeneratedCode(null);
+  };
+
+  // Update task status from Task Panel
+  const handleUpdateTaskStatusFromPanel = (
+    toolId: ToolId,
+    sessionId: string,
+    status: TaskStatus
+  ) => {
+    console.log('[App] Updating task status:', toolId, sessionId, status);
+    setToolHistory(prev => {
+      const toolHist = prev[toolId];
+      const sessionIndex = toolHist.sessions.findIndex(s => s.id === sessionId);
+      if (sessionIndex === -1) return prev;
+
+      const session = toolHist.sessions[sessionIndex];
+      if (!isTaskSession(session)) return prev;
+
+      const updatedSession = updateTaskStatusFn(session, status);
+      // Sync to file
+      syncTaskToFile(updatedSession);
+
+      const updatedSessions = [...toolHist.sessions];
+      updatedSessions[sessionIndex] = updatedSession;
+
+      return {
+        ...prev,
+        [toolId]: {
+          ...toolHist,
+          sessions: updatedSessions
+        }
+      };
+    });
+  };
+
   const handleChangeProject = () => {
     // Reset project directory to trigger project selector
     setProjectDir(null);
@@ -454,7 +932,16 @@ ${diff}`;
         contextUsage: {
           used: messages.reduce((sum, m) => sum + m.text.length, 0),
           total: 200000
-        }
+        },
+        // Task mode context
+        projectDir: projectDir || undefined,
+        currentSession: activeSession,
+        createTask: handleCreateTask,
+        updateTaskStatus: handleUpdateTaskStatus,
+        addTaskItem: handleAddTaskItem,
+        completeTaskItem: handleCompleteTaskItemByIndex,
+        getTaskStats: handleGetTaskStats,
+        getAllTasks: handleGetAllTasks
       });
 
       console.log('[App] Command result:', result);
@@ -470,6 +957,15 @@ ${diff}`;
 
       console.log('[App] Adding command message:', commandMsg);
       setMessages(prev => [...prev, commandMsg]);
+
+      // If command has autoSendMessage, send it to the AI
+      if (result.autoSendMessage) {
+        console.log('[App] Auto-sending message:', result.autoSendMessage);
+        // Use setTimeout to ensure the UI updates first
+        setTimeout(() => {
+          handleSendMessage(result.autoSendMessage!);
+        }, 100);
+      }
       return;
     }
 
@@ -574,6 +1070,7 @@ ${diff}`;
       <Sidebar
         activeTool={activeTool}
         onToolSelect={handleToolSelect}
+        onRequestAgentSwitch={handleRequestAgentSwitch}
         onChangeProject={handleChangeProject}
         projectDir={projectDir}
         onOpenProfile={() => setIsProfileOpen(true)}
@@ -592,6 +1089,12 @@ ${diff}`;
           onNewChat={handleNewChat}
           onSwitchSession={handleSwitchSession}
           onDeleteSession={handleDeleteSession}
+          // Task mode props
+          activeSession={activeSession}
+          onPauseTask={() => handleUpdateTaskStatus(TaskStatus.PAUSED)}
+          onResumeTask={() => handleUpdateTaskStatus(TaskStatus.IN_PROGRESS)}
+          onCompleteTask={() => handleUpdateTaskStatus(TaskStatus.COMPLETED)}
+          onToggleTaskItem={handleToggleTaskItem}
         />
         {isProfileOpen ? (
           <ProfilePanel onClose={() => setIsProfileOpen(false)} />
@@ -608,6 +1111,17 @@ ${diff}`;
             onCreateTerminal={createInteractiveTerminal}
             onSendInput={sendTerminalInput}
             onGenerateCommitMessage={handleGenerateCommitMessage}
+            toolHistory={toolHistory}
+            onNavigateToTask={handleNavigateToTask}
+            onUpdateTaskStatus={handleUpdateTaskStatusFromPanel}
+            // Parallel task props (Phase 2.3)
+            parallelTasks={parallelTasks}
+            queueStats={queueStats}
+            onPauseParallelTask={handlePauseParallelTask}
+            onResumeParallelTask={handleResumeParallelTask}
+            onCancelParallelTask={handleCancelParallelTask}
+            onMoveTaskUp={handleMoveParallelTaskUp}
+            onMoveTaskDown={handleMoveParallelTaskDown}
           />
         )}
       </div>
@@ -616,7 +1130,22 @@ ${diff}`;
         isOpen={isConfigOpen}
         onClose={() => setIsConfigOpen(false)}
         activeTool={activeTool}
+        parallelConfig={parallelConfig}
+        onParallelConfigChange={handleParallelConfigChange}
       />
+
+      {/* Agent Switch Dialog (Phase 1.3) */}
+      {pendingToolSwitch && (
+        <AgentSwitchDialog
+          isOpen={isAgentSwitchDialogOpen}
+          onClose={handleCloseAgentSwitchDialog}
+          currentTool={activeTool}
+          targetTool={pendingToolSwitch}
+          messages={messages}
+          onConfirm={handleConfirmAgentSwitch}
+          isGeneratingSummary={isGeneratingSummary}
+        />
+      )}
     </div>
   );
 };

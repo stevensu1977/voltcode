@@ -3,25 +3,29 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import { invoke } from '@tauri-apps/api/core';
 
 interface XTerminalProps {
   terminalId: string;
   onData: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
+  onLocalLinkClick?: (url: string) => void; // Called for localhost/127.0.0.1 URLs
 }
 
 export interface XTerminalHandle {
   write: (data: string) => void;
   fit: () => void;
   focus: () => void;
+  refresh: () => void;  // Force full redraw
 }
 
-const XTerminal = forwardRef<XTerminalHandle, XTerminalProps>(({ terminalId, onData, onResize }, ref) => {
+const XTerminal = forwardRef<XTerminalHandle, XTerminalProps>(({ terminalId, onData, onResize, onLocalLinkClick }, ref) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const onDataRef = useRef(onData);
   const onResizeRef = useRef(onResize);
+  const onLocalLinkClickRef = useRef(onLocalLinkClick);
   const initializedRef = useRef(false);
 
   // Keep refs updated
@@ -32,6 +36,10 @@ const XTerminal = forwardRef<XTerminalHandle, XTerminalProps>(({ terminalId, onD
   useEffect(() => {
     onResizeRef.current = onResize;
   }, [onResize]);
+
+  useEffect(() => {
+    onLocalLinkClickRef.current = onLocalLinkClick;
+  }, [onLocalLinkClick]);
 
   // Expose methods via ref
   useImperativeHandle(ref, () => ({
@@ -48,6 +56,13 @@ const XTerminal = forwardRef<XTerminalHandle, XTerminalProps>(({ terminalId, onD
     focus: () => {
       if (xtermRef.current) {
         xtermRef.current.focus();
+      }
+    },
+    refresh: () => {
+      if (xtermRef.current) {
+        // Force a full redraw of all lines
+        const term = xtermRef.current;
+        term.refresh(0, term.rows - 1);
       }
     },
   }), []);
@@ -93,7 +108,38 @@ const XTerminal = forwardRef<XTerminalHandle, XTerminalProps>(({ terminalId, onD
 
     // Create and load addons
     const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
+
+    // Helper to check if URL is local (localhost or 127.0.0.1)
+    const isLocalUrl = (url: string): boolean => {
+      try {
+        const parsed = new URL(url);
+        return parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+      } catch {
+        return false;
+      }
+    };
+
+    // WebLinksAddon with custom handler
+    // - localhost/127.0.0.1 → open in Preview panel (iframe)
+    // - external URLs → open in new Tauri window
+    const webLinksAddon = new WebLinksAddon((event, uri) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (uri.startsWith('http://') || uri.startsWith('https://')) {
+        if (isLocalUrl(uri)) {
+          // Local URL - open in Preview panel
+          console.log('[XTerminal] Opening local link in preview:', uri);
+          onLocalLinkClickRef.current?.(uri);
+        } else {
+          // External URL - open in new Tauri window
+          console.log('[XTerminal] Opening external link in new window:', uri);
+          invoke('open_preview_window', { url: uri }).catch(err => {
+            console.error('[XTerminal] Failed to open preview window:', err);
+          });
+        }
+      }
+    });
 
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(webLinksAddon);

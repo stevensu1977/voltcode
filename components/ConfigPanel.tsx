@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Box, Server, Terminal, Plus, Sparkles, Sun, Terminal as TerminalIcon, Zap, FileText, ExternalLink, Check, ChevronDown, Trash2 } from 'lucide-react';
-import { SkillInfo, ClaudeProvider, McpServerInfo, McpTransportType } from '../types';
+import { SkillInfo, ClaudeProvider, McpServerInfo, McpTransportType, ParallelTaskConfig } from '../types';
 import { ToolId } from '../types';
 import { cliRouter } from '../services/cliRouter';
+import { Layers } from 'lucide-react';
 
 // AWS Regions data
 const AWS_REGIONS = ['us-east-1', 'us-west-2'];
@@ -27,6 +28,8 @@ interface ConfigPanelProps {
   isOpen: boolean;
   onClose: () => void;
   activeTool: ToolId;
+  parallelConfig?: ParallelTaskConfig;
+  onParallelConfigChange?: (config: ParallelTaskConfig) => void;
 }
 
 // AWS Bedrock Icon Component
@@ -45,7 +48,7 @@ const BedrockIcon = ({ size = 24, className }: { size?: number | string, classNa
   </svg>
 );
 
-const ConfigPanel: React.FC<ConfigPanelProps> = ({ isOpen, onClose, activeTool }) => {
+const ConfigPanel: React.FC<ConfigPanelProps> = ({ isOpen, onClose, activeTool, parallelConfig, onParallelConfigChange }) => {
   const [activeTab, setActiveTab] = useState('models');
   const [claudeProvider, setClaudeProvider] = useState<ClaudeProvider>(cliRouter.getProvider());
   const [bedrockRegion, setBedrockRegion] = useState(cliRouter.getBedrockRegion());
@@ -124,6 +127,12 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ isOpen, onClose, activeTool }
               active={activeTab === 'skills'}
               onClick={() => setActiveTab('skills')}
             />
+            <NavItem
+              icon={<Layers size={18} />}
+              label="Parallel"
+              active={activeTab === 'parallel'}
+              onClick={() => setActiveTab('parallel')}
+            />
           </div>
         </div>
 
@@ -135,6 +144,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ isOpen, onClose, activeTool }
               {activeTab === 'mcp' && 'MCP Servers'}
               {activeTab === 'commands' && 'Commands'}
               {activeTab === 'skills' && 'Skills'}
+              {activeTab === 'parallel' && 'Parallel Execution'}
             </h3>
             <button 
               onClick={onClose}
@@ -259,6 +269,13 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ isOpen, onClose, activeTool }
 
             {activeTab === 'skills' && (
                <SkillsContent activeTool={activeTool} />
+            )}
+
+            {activeTab === 'parallel' && (
+               <ParallelContent
+                 config={parallelConfig}
+                 onChange={onParallelConfigChange}
+               />
             )}
           </div>
         </div>
@@ -767,6 +784,127 @@ const McpServersContent: React.FC<{ activeTool: ToolId }> = ({ activeTool }) => 
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+// Parallel Execution Content Component (Phase 2.3)
+const ParallelContent: React.FC<{
+  config?: ParallelTaskConfig;
+  onChange?: (config: ParallelTaskConfig) => void;
+}> = ({ config, onChange }) => {
+  const [localConfig, setLocalConfig] = useState<ParallelTaskConfig>(
+    config || { maxConcurrency: 3, autoStartQueued: true }
+  );
+
+  useEffect(() => {
+    if (config) {
+      setLocalConfig(config);
+    }
+  }, [config]);
+
+  const handleMaxConcurrencyChange = (value: number) => {
+    const newConfig = { ...localConfig, maxConcurrency: value };
+    setLocalConfig(newConfig);
+    onChange?.(newConfig);
+  };
+
+  const handleAutoStartChange = (enabled: boolean) => {
+    const newConfig = { ...localConfig, autoStartQueued: enabled };
+    setLocalConfig(newConfig);
+    onChange?.(newConfig);
+  };
+
+  return (
+    <div className="space-y-6">
+      <p className="text-xs text-gray-500 mb-4">
+        Configure how tasks run in parallel across multiple agents.
+      </p>
+
+      {/* Max Concurrency Slider */}
+      <div className="bg-[#1a1a1a] border border-ide-border rounded-xl p-4">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-gradient-to-br from-blue-500/20 to-purple-500/20 text-blue-400">
+              <Layers size={20} />
+            </div>
+            <div>
+              <span className="font-medium text-gray-200 block">Max Concurrent Tasks</span>
+              <span className="text-xs text-gray-500">How many tasks can run simultaneously</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-2xl font-bold text-ide-accent">{localConfig.maxConcurrency}</span>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <input
+            type="range"
+            min={1}
+            max={10}
+            value={localConfig.maxConcurrency}
+            onChange={(e) => handleMaxConcurrencyChange(Number(e.target.value))}
+            className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-ide-accent"
+          />
+          <div className="flex justify-between text-xs text-gray-500">
+            <span>1 (Sequential)</span>
+            <span>10 (Max parallel)</span>
+          </div>
+        </div>
+
+        <p className="text-[10px] text-gray-500 mt-3">
+          Higher values allow more tasks to run at once, but may use more system resources.
+        </p>
+      </div>
+
+      {/* Auto-start Queued Tasks */}
+      <div className="bg-[#1a1a1a] border border-ide-border rounded-xl p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-gradient-to-br from-green-500/20 to-emerald-500/20 text-green-400">
+              <Zap size={20} />
+            </div>
+            <div>
+              <span className="font-medium text-gray-200 block">Auto-start Queued Tasks</span>
+              <span className="text-xs text-gray-500">Automatically start tasks when a slot opens</span>
+            </div>
+          </div>
+          <button
+            onClick={() => handleAutoStartChange(!localConfig.autoStartQueued)}
+            className={`w-12 h-6 rounded-full relative transition-colors ${
+              localConfig.autoStartQueued ? 'bg-green-500' : 'bg-gray-700'
+            }`}
+          >
+            <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+              localConfig.autoStartQueued ? 'left-7' : 'left-1'
+            }`} />
+          </button>
+        </div>
+      </div>
+
+      {/* Info Card */}
+      <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4">
+        <h4 className="text-sm font-medium text-blue-400 mb-2">How Parallel Execution Works</h4>
+        <ul className="text-xs text-gray-400 space-y-1.5">
+          <li className="flex items-start gap-2">
+            <span className="text-blue-400 mt-0.5">•</span>
+            <span>Tasks beyond the limit are added to a priority queue</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="text-blue-400 mt-0.5">•</span>
+            <span>Each task runs independently on its own agent</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="text-blue-400 mt-0.5">•</span>
+            <span>Pause or cancel individual tasks without affecting others</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="text-blue-400 mt-0.5">•</span>
+            <span>View all tasks in the Task Board (TASKS tab)</span>
+          </li>
+        </ul>
+      </div>
     </div>
   );
 };

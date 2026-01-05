@@ -29,12 +29,28 @@ const KiroIcon = ({ size = 24, className }: { size?: number | string, className?
 interface SidebarProps {
   activeTool: ToolId;
   onToolSelect: (toolId: ToolId) => void;
+  onRequestAgentSwitch?: (targetTool: ToolId) => void;  // Opens switch dialog
   onChangeProject?: () => void;
   projectDir?: string | null;
   onOpenProfile?: () => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ activeTool, onToolSelect, onChangeProject, projectDir, onOpenProfile }) => {
+const Sidebar: React.FC<SidebarProps> = ({ activeTool, onToolSelect, onRequestAgentSwitch, onChangeProject, projectDir, onOpenProfile }) => {
+  // Handler for tool clicks - opens dialog for different agents, does nothing for current
+  const handleToolClick = (toolId: ToolId) => {
+    if (toolId === activeTool) {
+      // Clicking current tool - no action (could open config later)
+      return;
+    }
+    // Opening switch dialog via callback
+    if (onRequestAgentSwitch) {
+      onRequestAgentSwitch(toolId);
+    } else {
+      // Fallback to direct switch if no dialog handler
+      onToolSelect(toolId);
+    }
+  };
+
   // Definition of CLI tools for easy expansion
   const cliTools: ToolDefinition[] = [
     { id: 'claude', name: 'Claude Code', icon: <Sun size={24} />, color: 'text-orange-500' },
@@ -80,13 +96,13 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTool, onToolSelect, onChangePro
            {cliTools.map((tool) => (
              <div
                key={tool.id}
-               onClick={() => onToolSelect(tool.id)}
+               onClick={() => handleToolClick(tool.id)}
                className={`relative p-2.5 rounded-xl cursor-pointer transition-all duration-200 group ${
                  activeTool === tool.id
                    ? 'bg-white/10 shadow-lg'
                    : 'hover:bg-white/5'
                }`}
-               title={`Configure ${tool.name}`}
+               title={activeTool === tool.id ? tool.name : `Switch to ${tool.name}`}
              >
                {/* Icon with specific brand color */}
                <div className={`${tool.color} transition-transform group-hover:scale-110 flex items-center justify-center`}>

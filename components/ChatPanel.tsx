@@ -1,10 +1,12 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Sparkles, Files, Sun, Terminal as TerminalIcon, SlidersHorizontal, Copy, Check, ChevronDown, Users, Plus, MessageSquare, Trash2, History } from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Send, Bot, User, Sparkles, Files, Sun, Terminal as TerminalIcon, SlidersHorizontal, Copy, Check, ChevronDown, Users, Plus, MessageSquare, Trash2, History, Search, Download, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { Message, Sender, ToolId, ChatSession } from '../types';
+import { Message, Sender, ToolId, ChatSession, isTaskSession } from '../types';
+import { exportSessionToMarkdown } from '../services/sessionStore';
+import { TaskHeader } from './TaskHeader';
 
 // Built-in Claude Code agents
 const BUILT_IN_AGENTS = [
@@ -13,7 +15,7 @@ const BUILT_IN_AGENTS = [
   { name: 'Plan', description: 'Software architecture planning', isBuiltIn: true },
 ];
 
-// Terminal output component using xterm
+// Terminal output component using xterm (for chat message display)
 const TerminalMessage: React.FC<{ content: string }> = ({ content }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -40,6 +42,7 @@ const TerminalMessage: React.FC<{ content: string }> = ({ content }) => {
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
+
     term.open(terminalRef.current);
 
     // Write content with ANSI codes
@@ -151,6 +154,12 @@ interface ChatPanelProps {
   onNewChat: () => void;
   onSwitchSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
+  // Task mode props
+  activeSession?: ChatSession;
+  onPauseTask?: () => void;
+  onResumeTask?: () => void;
+  onCompleteTask?: () => void;
+  onToggleTaskItem?: (itemId: string) => void;
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -165,14 +174,64 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   activeSessionId,
   onNewChat,
   onSwitchSession,
-  onDeleteSession
+  onDeleteSession,
+  activeSession,
+  onPauseTask,
+  onResumeTask,
+  onCompleteTask,
+  onToggleTaskItem
 }) => {
   const [inputValue, setInputValue] = useState('');
   const [showAgentDropdown, setShowAgentDropdown] = useState(false);
   const [showHistoryDropdown, setShowHistoryDropdown] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const agentDropdownRef = useRef<HTMLDivElement>(null);
   const historyDropdownRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Filter sessions based on search query
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return chatSessions;
+    }
+    const lowerQuery = searchQuery.toLowerCase();
+    return chatSessions.filter(session => {
+      // Search in title
+      if (session.title.toLowerCase().includes(lowerQuery)) {
+        return true;
+      }
+      // Search in messages
+      return session.messages.some(msg =>
+        msg.text.toLowerCase().includes(lowerQuery)
+      );
+    });
+  }, [chatSessions, searchQuery]);
+
+  // Export session as markdown file
+  const handleExportSession = async (session: ChatSession, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const markdown = exportSessionToMarkdown(session, activeTool);
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${session.title.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date(session.createdAt).toISOString().split('T')[0]}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Focus search input when dropdown opens
+  useEffect(() => {
+    if (showHistoryDropdown && searchInputRef.current) {
+      setTimeout(() => searchInputRef.current?.focus(), 100);
+    }
+    if (!showHistoryDropdown) {
+      setSearchQuery('');
+    }
+  }, [showHistoryDropdown]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -264,43 +323,85 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             </button>
 
             {showHistoryDropdown && (
-              <div className="absolute right-0 top-full mt-1 w-64 bg-ide-panel border border-ide-border rounded-lg shadow-xl z-50 overflow-hidden max-h-80 overflow-y-auto">
-                <div className="p-2 border-b border-ide-border flex items-center justify-between">
-                  <span className="text-[10px] text-gray-500 uppercase tracking-wider">Chat History</span>
-                  <span className="text-[10px] text-gray-600">{chatSessions.length} chats</span>
-                </div>
-                {chatSessions.map((session) => (
-                  <div
-                    key={session.id}
-                    className={`group flex items-center justify-between px-3 py-2 hover:bg-white/5 transition-colors cursor-pointer ${
-                      session.id === activeSessionId ? 'bg-blue-600/20 border-l-2 border-blue-500' : ''
-                    }`}
-                    onClick={() => {
-                      onSwitchSession(session.id);
-                      setShowHistoryDropdown(false);
-                    }}
-                  >
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                      <MessageSquare size={14} className="text-gray-500 flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm text-gray-200 block truncate">{session.title}</span>
-                        <span className="text-[10px] text-gray-500">
-                          {new Date(session.updatedAt).toLocaleDateString()}
-                        </span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteSession(session.id);
-                      }}
-                      className="p-1 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
-                      title="Delete chat"
-                    >
-                      <Trash2 size={12} />
-                    </button>
+              <div className="absolute right-0 top-full mt-1 w-72 bg-ide-panel border border-ide-border rounded-lg shadow-xl z-50 overflow-hidden">
+                {/* Header with search */}
+                <div className="p-2 border-b border-ide-border space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-wider">Chat History</span>
+                    <span className="text-[10px] text-gray-600">{chatSessions.length} chats</span>
                   </div>
-                ))}
+                  {/* Search input */}
+                  <div className="relative">
+                    <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" />
+                    <input
+                      ref={searchInputRef}
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search chats..."
+                      className="w-full bg-ide-bg border border-ide-border rounded pl-7 pr-7 py-1.5 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    />
+                    {searchQuery && (
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Session list */}
+                <div className="max-h-64 overflow-y-auto">
+                  {filteredSessions.length === 0 ? (
+                    <div className="p-4 text-center text-gray-500 text-xs">
+                      {searchQuery ? 'No matching chats found' : 'No chat history'}
+                    </div>
+                  ) : (
+                    filteredSessions.map((session) => (
+                      <div
+                        key={session.id}
+                        className={`group flex items-center justify-between px-3 py-2 hover:bg-white/5 transition-colors cursor-pointer ${
+                          session.id === activeSessionId ? 'bg-blue-600/20 border-l-2 border-blue-500' : ''
+                        }`}
+                        onClick={() => {
+                          onSwitchSession(session.id);
+                          setShowHistoryDropdown(false);
+                        }}
+                      >
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <MessageSquare size={14} className="text-gray-500 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <span className="text-sm text-gray-200 block truncate">{session.title}</span>
+                            <span className="text-[10px] text-gray-500">
+                              {new Date(session.updatedAt).toLocaleDateString()}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                          <button
+                            onClick={(e) => handleExportSession(session, e)}
+                            className="p-1 rounded hover:bg-blue-500/20 text-gray-500 hover:text-blue-400"
+                            title="Export as Markdown"
+                          >
+                            <Download size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeleteSession(session.id);
+                            }}
+                            className="p-1 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400"
+                            title="Delete chat"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -345,6 +446,17 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           )}
         </div>
       </div>
+
+      {/* Task Header (if current session is a task) */}
+      {activeSession && isTaskSession(activeSession) && (
+        <TaskHeader
+          session={activeSession}
+          onPause={onPauseTask || (() => {})}
+          onResume={onResumeTask || (() => {})}
+          onComplete={onCompleteTask || (() => {})}
+          onToggleItem={onToggleTaskItem || (() => {})}
+        />
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
